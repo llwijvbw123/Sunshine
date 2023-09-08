@@ -304,6 +304,12 @@ namespace stream {
     sync_util::sync_t<std::vector<std::pair<std::string, std::uint16_t>>> audio_video_connections;
 
     control_server_t control_server;
+    //lian自己修改
+    //第一个连接
+    bool is_first_connect;
+    //向本地UDP发送数据
+    std::thread local_video_thread;
+    udp::socket local_video_sock { io };
   };
 
   struct session_t {
@@ -1343,10 +1349,29 @@ namespace stream {
     }
 
     ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
-
+    //按ctx启动音视频数据发送线程
     ctx.video_thread = std::thread { videoBroadcastThread, std::ref(ctx.video_sock) };
     ctx.audio_thread = std::thread { audioBroadcastThread, std::ref(ctx.audio_sock) };
     ctx.control_thread = std::thread { controlBroadcastThread, &ctx.control_server };
+
+    if(ctx.is_first_connect){
+      ///如果是第一个接入的连接,启动一个本地的视频流发送程序
+      ///将数据流发到本地,方便后续通过xtcp 由tcp通道发送此包
+      boost::system::error_code ec;
+      bool hasErr = false;
+      ctx.local_video_sock.open(udp::v4(), ec);
+      if (ec) {
+        hasErr = true;
+      }
+
+      ctx.local_video_sock.bind(udp::endpoint(udp::v4(), 65530), ec);
+      if (ec) {
+        hasErr = true;
+      }
+      if(!hasErr){
+        ctx.local_video_thread = std::thread { videoBroadcastThread, std::ref(ctx.local_video_sock) };
+      }
+    }
 
     ctx.recv_thread = std::thread { recvThread, std::ref(ctx) };
 
@@ -1635,6 +1660,7 @@ namespace stream {
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
         platf::streaming_will_start();
+        session.broadcast_ref->is_first_connect = true;
       }
 
       return 0;
